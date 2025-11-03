@@ -6,10 +6,10 @@ from tensorflow.keras.optimizers import Adam
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-# --- Import từ utils.py ---
+
 from utils import load_real_shoe_data, create_tf_dataset, TARGET_IMAGE_SIZE, IMAGE_CHANNELS
 
-# --- 1. Hằng số và Tải Dữ liệu ---
+
 BUFFER_SIZE = 10000 
 BATCH_SIZE = 64      
 NOISE_DIM = 100
