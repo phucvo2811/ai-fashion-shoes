@@ -2,29 +2,33 @@ import tensorflow as tf
 import numpy as np
 import os
 
+# --- CẤU HÌNH ---
 TARGET_IMAGE_SIZE = (128, 128) 
 IMAGE_CHANNELS = 3 
 DATA_ROOT_DIR = "dataset" 
-
-# CHỈ LẤY SNEAKER (Gom cả Shoes vào làm 1 class)
-LABEL_MAP = {
-    "Sneakers": 0,  
-    "Shoes": 0,     
-}
+LABEL_MAP = {"Sneakers": 0, "Shoes": 0}
 
 def map_path_to_image(image_path, label):
+    # Đọc ảnh
     image = tf.io.read_file(image_path)
     image = tf.io.decode_image(image, channels=IMAGE_CHANNELS, expand_animations=False)
-    image = tf.image.resize(image, TARGET_IMAGE_SIZE, method='bicubic') # Bicubic cho nét
+    
+    # Resize nét nhất có thể
+    image = tf.image.resize(image, TARGET_IMAGE_SIZE, method='bicubic')
+    
+    # Chuẩn hóa về [-1, 1] cho GAN
     image = tf.cast(image, tf.float32)
     image = (image / 127.5) - 1
-    image = tf.image.random_flip_left_right(image) # Tăng dữ liệu
+    
+    # --- ĐÃ XÓA DÒNG LẬT ẢNH ---
+    # Giữ nguyên hướng gốc để AI dễ học
+    
     return image, label
 
 def load_real_shoe_data(data_dir, num_classes, target_size=TARGET_IMAGE_SIZE, channels=IMAGE_CHANNELS):
     all_image_paths = []
     all_labels = []
-    print(f"Bắt đầu quét dữ liệu SNEAKER (128x128)...")
+    print(f"Bắt đầu quét dữ liệu SNEAKER (CỐ ĐỊNH HƯỚNG)...")
     
     for root, _, files in os.walk(data_dir):
         assigned_label = -1
