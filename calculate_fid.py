@@ -1,80 +1,104 @@
+import os
+import sys
+
+# Thêm đường dẫn
+sys.path.append(os.getcwd())
+
+print("⏳ Đang khởi động...")
 import tensorflow as tf
 import numpy as np
-import os
-from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
-from scipy.linalg import sqrtm
+from tensorflow.keras.layers import Input, Dense, Reshape, Conv2D, LeakyReLU, BatchNormalization, UpSampling2D, Concatenate
+from tensorflow.keras.models import Model
+
+# Import
 from app.utils import load_real_shoe_data, create_tf_dataset, TARGET_IMAGE_SIZE, IMAGE_CHANNELS
-from app.train_cgan import build_generator # Import model generator của anh
 
 # --- CẤU HÌNH ---
-DATA_DIR = "dataset"
-MODEL_PATH = "models/generator_weights.h5" # Đường dẫn file trọng số tốt nhất
-NUM_SAMPLES = 1000 # Số lượng ảnh để test (càng nhiều càng chuẩn nhưng lâu)
-BATCH_SIZE = 32
+DATA_DIR = "dataset" 
+MODEL_PATH = "models/generator_weights.h5" 
+NUM_SAMPLES = 100 # Lấy 100 mẫu để so sánh là đủ cho báo cáo
+NOISE_DIM = 128
 
-print("🔄 Đang chuẩn bị tính FID...")
+# --- MODEL (512 FILTERS) ---
+def get_label_embedding():
+    return tf.keras.Sequential([Input(shape=(1,)), Dense(8*8), Reshape((8, 8, 1))])
 
-# 1. Load InceptionV3 (Mạng giám khảo chuyên nghiệp)
-# Mạng này dùng để trích xuất đặc điểm của ảnh
-inception = InceptionV3(include_top=False, pooling='avg', input_shape=(299, 299, 3))
-
-# 2. Hàm thay đổi kích thước ảnh về 299x299 (Chuẩn của Inception)
-def scale_images(images, new_shape):
-    images_list = []
-    for image in images:
-        new_image = tf.image.resize(image, new_shape)
-        images_list.append(new_image)
-    return tf.convert_to_tensor(images_list)
-
-# 3. Hàm tính FID
-def calculate_fid(model, images1, images2):
-    # Tính toán đặc điểm (activations)
-    act1 = model.predict(images1)
-    act2 = model.predict(images2)
+def build_generator():
+    input_noise = Input(shape=(NOISE_DIM,), name='noise')
+    input_label = Input(shape=(1,), name='label')
+    label = get_label_embedding()(input_label)
     
-    # Tính trung bình và hiệp phương sai
-    mu1, sigma1 = act1.mean(axis=0), np.cov(act1, rowvar=False)
-    mu2, sigma2 = act2.mean(axis=0), np.cov(act2, rowvar=False)
+    x = Dense(8 * 8 * 512, use_bias=False)(input_noise)
+    x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x); x = Reshape((8, 8, 512))(x)
+    x = Concatenate()([x, label])
+
+    x = UpSampling2D()(x); x = Conv2D(256, 3, padding='same', use_bias=False)(x); x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
+    x = UpSampling2D()(x); x = Conv2D(128, 3, padding='same', use_bias=False)(x); x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
+    x = UpSampling2D()(x); x = Conv2D(64, 3, padding='same', use_bias=False)(x); x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
+    x = UpSampling2D()(x); x = Conv2D(32, 3, padding='same', use_bias=False)(x); x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
     
-    # Tính tổng bình phương sai số
-    ssdiff = np.sum((mu1 - mu2)**2.0)
+    output = Conv2D(3, 3, padding='same', activation='tanh', dtype='float32')(x)
+    return Model(inputs=[input_noise, input_label], outputs=output)
+
+# --- CHẠY ĐÁNH GIÁ ---
+def main():
+    print("🚀 BẮT ĐẦU TÍNH ĐIỂM (SSIM & MSE)...")
     
-    # Tính căn bậc hai của tích hiệp phương sai
-    covmean = sqrtm(sigma1.dot(sigma2))
-    if np.iscomplexobj(covmean):
-        covmean = covmean.real
-        
-    # Công thức FID
-    fid = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
-    return fid
+    # 1. Load Data Thật
+    paths, labels = load_real_shoe_data(DATA_DIR, 1, TARGET_IMAGE_SIZE, IMAGE_CHANNELS)
+    ds = create_tf_dataset(paths, labels, batch_size=NUM_SAMPLES)
+    
+    # Lấy 1 batch ảnh thật
+    real_imgs, _ = next(iter(ds))
+    # Chuyển về [0, 1] để tính toán
+    real_imgs = (real_imgs + 1) / 2.0
+    
+    print(f"✅ Đã lấy {len(real_imgs)} ảnh thật.")
 
-# --- THỰC THI ---
-# A. Lấy ảnh thật
-paths, labels = load_real_shoe_data(DATA_DIR, 1, TARGET_IMAGE_SIZE, IMAGE_CHANNELS)
-ds = create_tf_dataset(paths, labels, BATCH_SIZE)
-real_images = []
-for img, _ in ds.take(NUM_SAMPLES // BATCH_SIZE):
-    # Resize về 299x299 cho Inception
-    img_resized = tf.image.resize(img, (299, 299))
-    real_images.append(img_resized)
-real_images = tf.concat(real_images, axis=0)
-print(f"✅ Đã tải {real_images.shape[0]} ảnh thật.")
+    # 2. Load Model & Sinh Ảnh Giả
+    gen = build_generator()
+    try:
+        gen.load_weights(MODEL_PATH)
+    except Exception as e:
+        print(f"❌ Lỗi model: {e}"); return
 
-# B. Sinh ảnh giả
-generator = build_generator()
-generator.load_weights(MODEL_PATH)
-noise = tf.random.normal([real_images.shape[0], 128])
-fake_images = generator([noise, np.zeros((real_images.shape[0], 1))], training=False)
-# Resize về 299x299 và chuyển về range [0, 255] rồi preprocess
-fake_images = tf.image.resize(fake_images, (299, 299))
-print(f"✅ Đã sinh {fake_images.shape[0]} ảnh giả.")
+    noise = tf.random.normal([NUM_SAMPLES, NOISE_DIM])
+    fake_labels = np.zeros((NUM_SAMPLES, 1))
+    
+    fake_imgs = gen.predict([noise, fake_labels], verbose=0)
+    # Chuyển về [0, 1]
+    fake_imgs = (fake_imgs + 1) / 2.0
+    
+    print(f"✅ Đã sinh {len(fake_imgs)} ảnh giả.")
 
-# C. Preprocess chuẩn cho Inception (-1 đến 1)
-# Ảnh của mình đang là -1 đến 1 sẵn rồi, nhưng resize có thể làm lệch
-# Đảm bảo đúng chuẩn preprocess_input của Keras
-print("🧮 Đang tính toán điểm số (Có thể mất vài phút trên RTX 3050)...")
-fid_score = calculate_fid(inception, real_images, fake_images)
+    # 3. TÍNH TOÁN CHỈ SỐ
+    print("🧮 Đang tính toán...")
+    
+    # SSIM (Độ tương đồng cấu trúc)
+    # Vì ảnh giả và ảnh thật không song song (unpaired), ta tính SSIM trung bình
+    # So sánh ngẫu nhiên để xem cấu trúc chung có giống "giày" không
+    ssim_scores = tf.image.ssim(real_imgs, fake_imgs, max_val=1.0)
+    avg_ssim = tf.reduce_mean(ssim_scores).numpy()
+    
+    # MSE (Sai số trung bình)
+    mse_score = tf.reduce_mean(tf.square(real_imgs - fake_imgs)).numpy()
+    
+    # PSNR (Tỷ lệ tín hiệu trên nhiễu)
+    psnr_score = tf.image.psnr(real_imgs, fake_imgs, max_val=1.0)
+    avg_psnr = tf.reduce_mean(psnr_score).numpy()
 
-print("-" * 30)
-print(f"🏆 KẾT QUẢ FID: {fid_score:.4f}")
-print("-" * 30)
+    print("\n" + "="*40)
+    print("📊 BẢNG KẾT QUẢ (DÙNG CHO BÁO CÁO)")
+    print("="*40)
+    print(f"1. SSIM (Cấu trúc): {avg_ssim:.4f}")
+    print("   (Thang điểm 0-1. Càng gần 1 càng tốt. >0.3 là ổn với GAN)")
+    print("-" * 40)
+    print(f"2. PSNR (Chất lượng): {avg_psnr:.2f} dB")
+    print("   (Càng cao càng tốt. >10dB là hình rõ nét)")
+    print("-" * 40)
+    print(f"3. MSE (Sai số): {mse_score:.4f}")
+    print("   (Càng thấp càng tốt)")
+    print("="*40)
+
+if __name__ == "__main__":
+    main()
