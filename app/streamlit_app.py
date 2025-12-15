@@ -2,75 +2,92 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import os
-from tensorflow.keras.layers import Input, Dense, Reshape, Conv2D, LeakyReLU, BatchNormalization, UpSampling2D, Concatenate
+import io
+from PIL import Image
+from tensorflow.keras.layers import (
+    Input,
+    Dense,
+    Reshape,
+    Conv2D,
+    LeakyReLU,
+    BatchNormalization,
+    UpSampling2D,
+    Concatenate,
+)
 from tensorflow.keras.models import Model
 
 # --- CẤU HÌNH ---
-st.set_page_config(page_title="👟 AI Sneaker Generator", layout="centered")
-st.title("👟 AI Sneaker Generator (High-Fidelity 128px)")
+st.set_page_config(
+    page_title="👟 Sneaker Report Tool", layout="wide"
+)  # Layout rộng để xem nhiều hình
+st.title("👟 Công Cụ Lọc Ảnh Báo Cáo (Cherry-Picking)")
+st.markdown("---")
 
 NOISE_DIM = 128
 
-# --- 1. KIẾN TRÚC GENERATOR (BẢN 512 FILTERS - KHỚP FILE TRAIN) ---
+# Cấu hình GPU/CPU
+gpus = tf.config.list_physical_devices("GPU")
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+
+# --- 1. MODEL GENERATOR (BẢN 512 FILTERS - KHỚP 100% FILE SAVE) ---
 def get_label_embedding():
-    return tf.keras.Sequential([
-        Input(shape=(1,)), 
-        Dense(8*8), 
-        Reshape((8, 8, 1))
-    ])
+    return tf.keras.Sequential([Input(shape=(1,)), Dense(8 * 8), Reshape((8, 8, 1))])
+
 
 def build_generator():
-    input_noise = Input(shape=(NOISE_DIM,), name='noise')
-    input_label = Input(shape=(1,), name='label')
-    
-    # Xử lý nhãn
+    input_noise = Input(shape=(NOISE_DIM,), name="noise")
+    input_label = Input(shape=(1,), name="label")
     label = get_label_embedding()(input_label)
 
-    # Xử lý Noise (DÙNG 512 FILTERS ĐỂ KHỚP 32768)
+    # Block 1: 512 Filters
     x = Dense(8 * 8 * 512, use_bias=False)(input_noise)
     x = BatchNormalization(momentum=0.8)(x)
     x = LeakyReLU(0.2)(x)
     x = Reshape((8, 8, 512))(x)
-    
-    # Ghép Nhãn
     x = Concatenate()([x, label])
 
-    # 4 Block Upsample (Giảm dần từ 512 -> 32)
-    
-    # Block 1: 8 -> 16 (Dùng 256 filters)
+    # Block 2: Upsample
     x = UpSampling2D()(x)
-    x = Conv2D(256, 3, padding='same', use_bias=False)(x)
-    x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
-
-    # Block 2: 16 -> 32 (Dùng 128 filters)
+    x = Conv2D(256, 3, padding="same", use_bias=False)(x)
+    x = BatchNormalization(momentum=0.8)(x)
+    x = LeakyReLU(0.2)(x)
     x = UpSampling2D()(x)
-    x = Conv2D(128, 3, padding='same', use_bias=False)(x)
-    x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
-
-    # Block 3: 32 -> 64 (Dùng 64 filters)
+    x = Conv2D(128, 3, padding="same", use_bias=False)(x)
+    x = BatchNormalization(momentum=0.8)(x)
+    x = LeakyReLU(0.2)(x)
     x = UpSampling2D()(x)
-    x = Conv2D(64, 3, padding='same', use_bias=False)(x)
-    x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
-
-    # Block 4: 64 -> 128 (Dùng 32 filters)
+    x = Conv2D(64, 3, padding="same", use_bias=False)(x)
+    x = BatchNormalization(momentum=0.8)(x)
+    x = LeakyReLU(0.2)(x)
     x = UpSampling2D()(x)
-    x = Conv2D(32, 3, padding='same', use_bias=False)(x)
-    x = BatchNormalization(momentum=0.8)(x); x = LeakyReLU(0.2)(x)
+    x = Conv2D(32, 3, padding="same", use_bias=False)(x)
+    x = BatchNormalization(momentum=0.8)(x)
+    x = LeakyReLU(0.2)(x)
 
-    # Output
-    output = Conv2D(3, 3, padding='same', activation='tanh', dtype='float32')(x)
-    
-    return Model(inputs=[input_noise, input_label], outputs=output, name="Generator")
+    output = Conv2D(3, 3, padding="same", activation="tanh", dtype="float32")(x)
+    return Model(inputs=[input_noise, input_label], outputs=output)
 
-# --- 2. LOAD MODEL ---
+
+# --- 2. HÀM LOAD MODEL ---
 def find_checkpoints():
     if os.path.isdir("models"):
-        files = [f for f in os.listdir("models") if f.endswith('.h5')]
-        return sorted(files, reverse=True)
+        return sorted(
+            [f for f in os.listdir("models") if f.endswith(".h5")], reverse=True
+        )
     return []
-
+# Sidebar Cấu hình
+st.sidebar.header("⚙️ Bảng Điều Khiển")
 files = find_checkpoints()
-selected_file = st.sidebar.selectbox("Chọn Epoch:", files) if files else None
+selected_file = (
+    st.sidebar.selectbox("Chọn Epoch (Nên chọn file mới nhất):", files)
+    if files
+    else None
+)
 
 @st.cache(allow_output_mutation=True)
 def load_model(filename):
@@ -80,32 +97,69 @@ def load_model(filename):
         if os.path.exists(path):
             try:
                 model.load_weights(path)
-                return True, model, path
-            except Exception as e:
-                return False, model, str(e)
-    return False, model, "Không tìm thấy file"
+                return True, model
+            except:
+                pass
+    return False, model
 
-is_ready, generator, msg = load_model(selected_file)
+is_ready, generator = load_model(selected_file)
 
-# --- 3. GIAO DIỆN ---
 if is_ready:
-    st.success(f"✅ Đã tải: {selected_file}")
+    st.sidebar.success(f"✅ Đã tải: {selected_file}")
 else:
-    st.error(f"⚠️ Lỗi tải: {msg}")
+    st.sidebar.error("❌ Chưa tải được model")
 
-num = st.sidebar.slider("Số lượng:", 1, 4, 2)
+# --- 3. GIAO DIỆN CHÍNH ---
 
-if st.sidebar.button("🎨 VẼ GIÀY"):
+# Quản lý trạng thái (Session State) để giữ hình không bị mất
+if "generated_images" not in st.session_state:
+    st.session_state.generated_images = []
+
+# Số lượng ảnh muốn sinh
+num_images = st.sidebar.slider("Số lượng ảnh muốn lọc:", 4, 20, 8, step=4)
+
+# Nút Bấm
+if st.sidebar.button("🎨 TẠO GIÀY MỚI"):
     if is_ready:
-        with st.spinner('Đang vẽ...'):
-            noise = tf.random.normal([num, NOISE_DIM])
-            # Fake nhãn 0 cho Sneaker
-            labels = np.zeros((num, 1))
-            
+        with st.spinner(f"Đang vẽ {num_images} mẫu giày..."):
+            noise = tf.random.normal([num_images, NOISE_DIM])
+            labels = np.zeros((num_images, 1))
+
+            # Sinh ảnh
             imgs = generator([noise, labels], training=False)
-            
-            cols = st.columns(num)
-            for i, col in enumerate(cols):
-                img = (imgs[i].numpy() * 0.5) + 0.5
-                img = np.clip(img * 255, 0, 255).astype(np.uint8)
-                col.image(img, use_column_width=True, caption=f"Mẫu {i+1}")
+
+            # Chuyển về format chuẩn để hiển thị và lưu
+            processed_imgs = []
+            for i in range(num_images):
+                img_array = (imgs[i].numpy() * 0.5) + 0.5
+                img_array = np.clip(img_array * 255, 0, 255).astype(np.uint8)
+                processed_imgs.append(img_array)
+
+            st.session_state.generated_images = processed_imgs
+
+if st.session_state.generated_images:
+    st.subheader(f"🔍 Kết quả: {len(st.session_state.generated_images)} mẫu")
+
+    # Chia lưới 4 cột
+    cols = st.columns(4)
+    for i, img_array in enumerate(st.session_state.generated_images):
+        with cols[i % 4]:
+            # Hiển thị ảnh
+            st.image(img_array, caption=f"Mẫu #{i+1}", use_column_width=True)
+
+            # Tạo nút Download cho từng ảnh
+            # Convert numpy array sang Bytes để tải về
+            pil_img = Image.fromarray(img_array)
+            buf = io.BytesIO()
+            pil_img.save(buf, format="PNG")
+            byte_im = buf.getvalue()
+
+            st.download_button(
+                label=f"💾 Tải Mẫu #{i+1}",
+                data=byte_im,
+                file_name=f"sneaker_report_{i+1}.png",
+                mime="image/png",
+                key=f"dl_{i}",  # Key duy nhất cho mỗi nút
+            )
+else:
+    st.info("👈 Hãy bấm nút 'TẠO GIÀY MỚI' bên trái để bắt đầu lọc hình.")
